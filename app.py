@@ -5,6 +5,7 @@ import bcrypt
 from flask_cors import CORS,cross_origin
 from flask_mail import Mail, Message
 
+# using dotenv to load environment variables from a .env file
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -24,6 +25,8 @@ import numpy as np
 import pandas as pd
 
 
+from transformers import pipeline
+import requests
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True)
@@ -58,6 +61,7 @@ def signup():
         password = data.get('password')
         confirmPassword = data.get('confirmPassword')
         role = data.get('role')
+        active=False
 
         if not username or not email or not password or not confirmPassword or not role:
             return jsonify({'status': False, 'msg': 'Incomplete data provided'}), 400
@@ -71,8 +75,11 @@ def signup():
             return jsonify({'status': False, 'msg': 'Password and confirm password do not match'}), 400
 
         hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-
-        user_id = collection.insert_one({'username': username,'email': email, 'password': hashed_password, 'role': role}).inserted_id
+        
+        if role == "admin":
+            user_id = collection.insert_one({'username': username,'email': email, 'password': hashed_password, 'role': role}).inserted_id
+        else:
+            user_id = collection.insert_one({'username': username,'email': email, 'password': hashed_password, 'role': role,'active': active}).inserted_id
 
         return jsonify({'status': True, 'msg': 'Registered successfully', 'user_id': str(user_id)}), 201
 
@@ -85,7 +92,7 @@ def signup():
 def login():
     try:
         data = request.get_json()
-        username = data.get('username')
+        
         email = data.get('email')
         password = data.get('password')
         role = data.get('role')
@@ -97,9 +104,12 @@ def login():
 
         user = collection.find_one({'email': email, 'role': role})
 
+        if(role=="patient"):
+            collection.update_one({'active': False}, {"$set": {'active': True}})
+
         if user and bcrypt.checkpw(password.encode('utf-8'), user['password']):
            
-            return jsonify({'status': True, 'msg': 'Login successful'}), 200
+            return jsonify({'status': True, 'msg': 'Login successful','username':user['username']}), 200
             
         else:
             return jsonify({'status': False, 'msg': 'Invalid email or password'}), 401
@@ -107,6 +117,23 @@ def login():
     except Exception as e:
         return jsonify({'status': False, 'msg': str(e)}), 500
 
+
+'''************************************************  Logout Code  *******************************************************************'''
+@app.route('/signout', methods=['POST'])
+def signout():
+    try:
+        data = request.get_json()        
+        username = data.get('username')
+        role=data.get('role')     
+
+        if role == "patient":
+            patient_collection.update_many({'username': username}, {"$set": {'active': False}})
+            return jsonify({'status': True, 'msg': 'Logout successful'}), 200            
+        else:
+            return jsonify({'status': False, 'msg': 'Invalid role'}), 401
+
+    except Exception as e:
+        return jsonify({'status': False, 'msg': str(e)}), 500
 
 # Check and create 'aroledetail' collection
 admin_data_name = 'aroledetail'
@@ -140,15 +167,18 @@ def receive_and_save_data():
             # Check if a record with the same "Sno" already exists in the database
             existing_record = collection.find_one({"Sno": record["Sno"]})
             if existing_record:
-                return jsonify({'message': f'Duplicate record with Sno {record["Sno"]} exists'}), 400
-
-        # Insert the received data into the MongoDB collection
-        result = collection.insert_many(data[1])
+                # Update the existing record
+                collection.update_one({"Sno": record["Sno"]}, {"$set": record})
+            else:
+                # Insert the record if it doesn't exist
+                collection.insert_one(record)
         
         return jsonify({'message': 'Data received and saved successfully'}), 200
     except Exception as e:
-        return jsonify({'message': f'Error: {str(e)}'}), 500 
+        return jsonify({'message': f'Error: {str(e)}'}), 500
 
+query_collection_name = 'querydb'
+query_collection = mongo.db[query_collection_name]
 '''*****************************************************Contact us Code**************************************************************************'''
 @app.route('/contact', methods=['POST'])
 def contact():
@@ -160,11 +190,27 @@ def contact():
         msg.body = f"Name: {data['first_name']} {data['last_name']}\nEmail: {data['email']}\nMessage: {data['message']}\n\nRaw Form Data:\n{data}"
 
         mail.send(msg)
-
+        # Save the message to the database
+        
+        new_message = {
+            'first_name': data['first_name'],
+            'last_name': data['last_name'],
+            'email': data['email'],
+            'message': data['message']
+        }
+        query_collection.insert_one(new_message)
         return jsonify({'message': 'Message sent successfully'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+@app.route('/messages', methods=['GET'])
+def get_messages():
+    try:        
+        messages = query_collection.find({}, {'_id': False})
+        message_list = [message for message in messages]
+        return jsonify(message_list)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # Check and create 'symptomdetail' collection
 symptom_data_name = 'symptomdetail'
@@ -199,7 +245,7 @@ def predict_disease_flask():
                    'Urinary tract infection', 'Psoriasis', 'Impetigo']'''
 
         # Load training data
-        train_data = pd.read_csv("Training_Predict.csv")
+        train_data = pd.read_csv(r"C:\Users\OS23H\OneDrive\Desktop\testingproject\server\Training_Predict.csv")
 
         df = pd.DataFrame(train_data)
 
@@ -229,7 +275,7 @@ def predict_disease_flask():
         accuracy = accuracy_score(y_test, y_pred)
    
 
-        test_data = pd.read_csv("Testing_Predict.csv")
+        test_data = pd.read_csv(r"C:\Users\OS23H\OneDrive\Desktop\testingproject\server\Testing_Predict.csv")
         
         testx=test_data[cols]
         testy=test_data['prognosis']
@@ -321,14 +367,20 @@ def get_past_history():
 
 
 
-@app.route('/gettotalpatients', methods=['GET'])
+@app.route('/admindash', methods=['GET'])
 @cross_origin(supports_credentials=True)
-def get_total_patients():
+def get_admin_dash():
     try:
         # Count the total number of documents in the 'prole' collection
         total_patients = patient_collection.count_documents({})
+        
+        # Fetch active status from all records
+        active_statuses = [patient['active'] for patient in patient_collection.find({}, {'active': True, '_id': 0})]
 
-        return jsonify({'total_patients': total_patients}), 200
+        # Calculate the number of active patients
+        active_patients = sum(active_statuses)
+
+        return jsonify({'total_patients': total_patients, 'active_patients': active_patients}), 200
 
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -395,10 +447,10 @@ def predict_and_suggest():
         symptoms = data.get('symptoms', [])
         disease = data.get('disease', '')
 
-        # Generate suggestions using OpenAI's GPT-3
+        # Generate suggestions using OpenAI's Transformer GPT-3 Model
         prompt = f"Given the symptoms: {', '.join(symptoms)} and the disease: {disease}, suggest medication and nutrient diet."
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo-0125",  # Use the latest GPT-3 engine
+            model="gpt-3.5-turbo-0125",  # Using the latest GPT-3 Transformer engine
             messages=[
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": prompt}
@@ -418,44 +470,8 @@ def predict_and_suggest():
         print("Error:", str(e))
         return jsonify({'error': f'Internal Server Error: {str(e)}'}), 500
 
-'''********************** Patient Profile *******************************'''
-@app.route('/records', methods=['GET'])
-def records():
-    try:
-        username = request.args.get('username')
-        print(username)
 
-        if not username:
-            return jsonify({'error': 'Username not provided'}), 400
-
-        # Assuming you have a field 'Name' in the collection to match with the username
-        user_data = patient_data.find_one({'Name': username})
-
-        if not user_data:
-            return jsonify({'error': 'User not found'}), 404
-
-        # Extract and return patient profile data
-        records = {
-            'Sno': user_data.get('Sno'),
-            'Name': user_data.get('Name'),
-            'Age': user_data.get('Age'),
-            'Sex': user_data.get('Sex'),
-            'Dates': user_data.get('Dates'),
-            'Description': user_data.get('Description'),
-            'Medical_specialty': user_data.get('Medical_specialty'),
-            'Sample_name': user_data.get('Sample_name'),
-            'Transcription': user_data.get('Transcription'),
-            'Keywords': user_data.get('Keywords')
-            # Add more fields as needed
-        }
-
-        return jsonify(records), 200
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
-
+    
 if __name__ == '__main__':
     app.run(debug=True)
 
