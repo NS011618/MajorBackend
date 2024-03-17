@@ -245,7 +245,7 @@ def predict_disease_flask():
                    'Urinary tract infection', 'Psoriasis', 'Impetigo']'''
 
         # Load training data
-        train_data = pd.read_csv(r"https://github.com/NS011618/MajorBackend/Training_Predict.csv")
+        train_data = pd.read_csv("https://github.com/NS011618/MajorBackend/Training_Predict.csv")
 
         df = pd.DataFrame(train_data)
 
@@ -275,7 +275,7 @@ def predict_disease_flask():
         accuracy = accuracy_score(y_test, y_pred)
    
 
-        test_data = pd.read_csv(r"https://github.com/NS011618/MajorBackend/Testing_Predict.csv")
+        test_data = pd.read_csv("https://github.com/NS011618/MajorBackend/Testing_Predict.csv")
         
         testx=test_data[cols]
         testy=test_data['prognosis']
